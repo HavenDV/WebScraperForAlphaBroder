@@ -8,6 +8,9 @@ using System.Text.RegularExpressions;
 using System.IO;
 using System.Threading;
 using System.Globalization;
+using HtmlAgilityPack;
+using ScrapySharp.Extensions;
+using ScrapySharp.Network;
 
 namespace WebScrapper
 {
@@ -23,9 +26,18 @@ namespace WebScrapper
     {
         static IDictionary<string, int> itemCount = new Dictionary<string, int>();
 
+        static string CreateLink(string categoryName, int categoryId = 130, int resultsNumber = 1)
+        {
+            return string.Format(
+                "https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults={0}&ff=yes&cat={1}&RequestAction=advisor&RequestData=CA_CategoryExpand&bpath=c&CatPath=All%20Products////ALP-Categories////{2}", 
+                resultsNumber,
+                categoryId,
+                categoryName);
+        }
+
         static string GetName(string data)
         {
-            foreach (Match match in Regex.Matches(data, "itemprop=\\\"name\\\">(.+)<\\/h1>"))
+            foreach (Match match in Regex.Matches(data, "<h1>(.+)<\\/h1>"))
             {
                 return match.Groups[1].Value;
             }
@@ -34,9 +46,9 @@ namespace WebScrapper
 
         static string GetDescription(string data)
         {
-            foreach (Match match in Regex.Matches(data, "<div class=\\\"rte\\\">((.|\\n)+?)<\\/div>"))
+            foreach (Match match in Regex.Matches(data, "<ul class=\\\"bullet\\\">((.|\\n)+?)<\\/ul>"))
             {
-                return match.Groups[1].Value;
+                return "<ul>\n"+match.Groups[1].Value+"</ul>";
             }
             return string.Empty;
         }
@@ -91,25 +103,26 @@ namespace WebScrapper
 
         static string GetCacheName(string url)
         {
-            var cacheName = new Uri(url).AbsolutePath;
+            var cacheName = new Uri(url).Query;
             foreach (var symvol in Path.GetInvalidPathChars())
             {
                 cacheName = cacheName.Replace(symvol + "", "");
             }
-            return cacheName.Replace("/", "");
+            return cacheName.Replace("/", "").Replace(":", "").Replace("?", "");
         }
 
         static string DownloadStringWithCache(string url)
         {
+            Console.WriteLine(url);
             var name = Path.GetFileName(url);
             var filePath = Path.Combine("cache", GetCacheName(url));
             if (File.Exists(filePath))
             {
                 return File.OpenText(filePath).ReadToEnd();
             }
-            var client = new WebClient();
-            var data = client.DownloadString(url);
+            var data = new ScrapingBrowser().NavigateToPage(new Uri(url)).Content;
             Directory.CreateDirectory("cache");
+            Console.WriteLine(filePath);
             var writer = File.CreateText(filePath);
             writer.Write(data);
             writer.Close();
@@ -118,38 +131,46 @@ namespace WebScrapper
 
         static string DownloadPage(string url, string team, string collection)
         {
-            var id = Path.GetFileName(url);
-            var data = DownloadStringWithCache("http://www.zhats.com/collections/" + collection.ToLowerInvariant() + "/products/" + id);
-            var name = GetName(data);
-            var desc = GetDescription(data);
-            var price = GetPrice(data);
-            if (string.IsNullOrWhiteSpace(price))
+            try
             {
-                throw new Exception("Price cannot be null.");
+                var data = DownloadStringWithCache(url);
+                var name = GetName(data);
+                var desc = GetDescription(data);
+                var price = GetPrice(data);
+                Console.WriteLine(price);
+                if (string.IsNullOrWhiteSpace(price))
+                {
+                    throw new Exception("Price cannot be null.");
+                }
+
+                var images = new List<string>();// GetImages(data, id);
+
+                //Fix duplicates roman number method
+                if (itemCount.ContainsKey(name))
+                {
+                    itemCount[name] = itemCount[name] + 1;
+                    name += " " + ToRoman(itemCount[name]);
+                }
+                else
+                {
+                    itemCount.Add(name, 1);
+                }
+
+                var template = "Product,,\"{0}\",P,,,,,Right,\"<p><span>{1}</span></p>\",{2},0.00,0.00,0.00,0.00,N,,16.0000,0.0000,0.0000,0.0000,Y,Y,,none,0,0,\"Shop/Caps \\/ Hats/{9}/{3}\",,{4},,Y,0,,{5},,,,,{6},,,,,{7},,,,,{8},,,,,,,,,,,New,N,N,\"Delivery Date\",N,,,0,\"Non - Taxable Products\",,N,,,,,,,,,,,,,N,,";
+                return string.Format(template,
+                    name, desc.Trim(' ', '\n', '\r').Replace("\r", "").Replace("\n", ""), price, team.Replace('-', ' '),
+                    images.Count > 0 ? images[0] : "",
+                    images.Count > 1 ? images[1] : "",
+                    images.Count > 2 ? images[2] : "",
+                    images.Count > 3 ? images[3] : "",
+                    images.Count > 4 ? images[4] : "",
+                    collection);
             }
-
-            var images = GetImages(data, id);
-
-            //Fix duplicates roman number method
-            if (itemCount.ContainsKey(name))
+            catch (Exception e)
             {
-                itemCount[name] = itemCount[name] + 1;
-                name += " " + ToRoman(itemCount[name]);
+                Console.WriteLine(e.Message);
             }
-            else
-            {
-                itemCount.Add(name, 1);
-            }
-
-            var template = "Product,,\"{0}\",P,,,,,Right,\"<p><span>{1}</span></p>\",{2},0.00,0.00,0.00,0.00,N,,16.0000,0.0000,0.0000,0.0000,Y,Y,,none,0,0,\"Shop/Caps \\/ Hats/{9}/{3}\",,{4},,Y,0,,{5},,,,,{6},,,,,{7},,,,,{8},,,,,,,,,,,New,N,N,\"Delivery Date\",N,,,0,\"Non - Taxable Products\",,N,,,,,,,,,,,,,N,,";
-            return string.Format(template,
-                name, desc.Trim(' ', '\n', '\r').Replace("\r","").Replace("\n",""), price, team.Replace('-',' '), 
-                images.Count > 0 ? images[ 0 ] : "", 
-                images.Count > 1 ? images[ 1 ] : "", 
-                images.Count > 2 ? images[ 2 ] : "",
-                images.Count > 3 ? images[ 3 ] : "",
-                images.Count > 4 ? images[ 4 ] : "",
-                collection );
+            return string.Empty;
         }
         
         static IList<string> GetTeams(string prefix)
@@ -175,11 +196,22 @@ namespace WebScrapper
         static IList<string> GetItems(string url)
         {
             var items = new List<string>();
-            var data = new WebClient().DownloadString(url);
+            //Console.WriteLine(url);
+            //var browser = new ScrapingBrowser();
+            //var homePage = browser.NavigateToPage(new Uri(url));
+            var data = DownloadStringWithCache(url);// homePage.Content;
 
-            foreach (Match match in Regex.Matches(data, "<div class=\\\"product-details\\\">((.|\\n)+?)<a href=\\\"(.+)\\\">"))
+            //Console.WriteLine(data);
+            //set UseDefaultCookiesParser as false if a website returns invalid cookies format
+            //browser.UseDefaultCookiesParser = false;
+
+            //var data = new WebClient().DownloadString(url);
+            foreach (Match match in Regex.Matches(data, "<div class=\\\"rsltProdNameText\\\">(.+?)<\\/div>"))
             {
-                items.Add(match.Groups[3].Value);
+                var item = string.Format(
+                    "https://www.alphabroder.com/cgi-bin/online/webshr/prod-labeldtl.w?sr={0}&currentColor=", 
+                    match.Groups[1].Value);
+                items.Add(item);
             }
 
             return items;
@@ -193,7 +225,7 @@ namespace WebScrapper
             do
             {
                 ++page;
-                nextItems = GetItems(url + "?page=" + page);
+                nextItems = GetItems(url + "&currentpage=" + page);
                 items.AddRange(nextItems);
             }
             while (nextItems.Count > 0);
@@ -213,7 +245,11 @@ namespace WebScrapper
         static async Task<string> DownloadItemsAsync(IList<string> items, string teamName, string collectionName)
         {
             Console.WriteLine("Start download {0} team: {1}. Size: {2}", collectionName, teamName, items.Count);
-            return string.Join("\n", await Task.WhenAll(items.Select(item => Task.Run(() => DownloadPage(item, teamName, collectionName)))));
+            return string.Join("\n", await Task.WhenAll(
+                items.Select(item => 
+                    Task.Run(() =>
+                        DownloadPage(item, teamName, collectionName)
+                ))));
         }
 
         static async Task<string> DownloadTeamsAsync(IList<string> teams, string collectionName)
@@ -240,11 +276,11 @@ namespace WebScrapper
 
         static void LoadCollection(string name, string to)
         {
-            var url = "http://www.zhats.com/collections/" + name;
+            var url = CreateLink(name);
             var file = CreateImportCSVFile(Path.Combine(to, name + ".csv"));
-            var items = GetItemsMultipage(url);
-            Console.WriteLine("Start download collection: {0}. Size: {1}", name, items.Count);
-            file.Write(DownloadItemsAsync(items, "", name));
+            var items = GetItems(url);
+            Console.WriteLine("Start download category: {0}. Size: {1}", name, items.Count);
+            file.Write(DownloadItemsAsync(items, "", name).Result);
             file.Close();
             Console.WriteLine("Download ended: {0}. Downloaded {1} items.", name, items.Count);
         }
@@ -280,20 +316,7 @@ Usage:
 
                 var outputDir = args[0];
                 Console.WriteLine("Download started.");
-                LoadCategory("NCAA", outputDir, "ncaateams");
-                LoadCategory("NHL", outputDir, "nhl-teams");
-                LoadCollection("blank", outputDir);
-                LoadCollection("colorado-flag", outputDir);
-                LoadCollection("country", outputDir);
-                LoadCollection("state", outputDir);
-                LoadCollection("dad-hats", outputDir);
-                LoadCollection("knits", outputDir);
-                LoadCollection("youth", outputDir);
-                LoadCollection("lacer", outputDir);
-                LoadCollection("toa", outputDir);
-                LoadCollection("original-six-1", outputDir);
-                LoadCollection("zephyr-brand", outputDir);
-                LoadCollection("powwow", outputDir);
+                LoadCollection("T-Shirts", outputDir);
                 Console.WriteLine("Download ended.");
             }
             catch(Exception e)
