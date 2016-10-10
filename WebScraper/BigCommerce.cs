@@ -36,9 +36,8 @@ namespace BigCommerce
 
         public static string ColorFormat(string color, IList<string> images)
         {
-
-            var template = "  Rule,,\"[CS]Color={0}:{1}\",,,,,,,,,,,,,,,,,,,Y,Y,,,,,,,{1},,N,,,{2},,,,,{3},,,,,{4},,,,,{5},,,,,,,,,,,,,,,,,,,,,N,,,,,,,,,,,,,,,";
-            return string.Format(template,
+            return string.Format(
+                "  Rule,,\"[CS]Color={0}:{1}\",,,,,,,,,,,,,,,,,,,Y,Y,,,,,,,{1},,N,,,{2},,,,,{3},,,,,{4},,,,,{5},,,,,,,,,,,,,,,,,,,,,N,,,,,,,,,,,,,,,",
                 color,
                 images.Count > 0 ? images[0] : "",
                 images.Count > 1 ? images[1] : "",
@@ -47,10 +46,28 @@ namespace BigCommerce
                 images.Count > 4 ? images[4] : "");
         }
 
+        public static string GetPrefixForValue(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? string.Empty : "[FIXED]";
+        }
+
+        public static string SizeFormat(string size, string price, string weight)
+        {
+            return string.Format(
+                "  Rule,,\"[RT]Size={0}\",,,,,,,,{3}{1},,,,,,,{4}{2},,,,Y,Y,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,N,,,,,,,,,,,,,,,", 
+                size, price, weight,
+                GetPrefixForValue(price),
+                GetPrefixForValue(weight));
+        }
+
         public static string ColorSizeFormat(string color, string size, string price, string weight, string previewImage)
         {
-            var template = "  Rule,,\"[CS]Color={0}:{4},[RT]Size={1}\",,,,,,,,[FIXED]{2},,,,,,,[FIXED]{3},,,,Y,Y,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,N,,,,,,,,,,,,,,,";
-            return string.Format(template, color, size, price, weight, previewImage);
+            return string.Format(
+                "  Rule,,\"[CS]Color={0}:{4},[RT]Size={1}\",,,,,,,,{5}{2},,,,,,,{6}{3},,,,Y,Y,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,N,,,,,,,,,,,,,,,",
+                color, size, price, weight, previewImage,
+                GetPrefixForValue(price),
+                GetPrefixForValue(weight)
+                );
         }
 
         public static string Header {
@@ -59,8 +76,9 @@ namespace BigCommerce
             }
         }
 
-        public static StreamWriter CreateImportFile(string path)
+        public static StreamWriter CreateImportCSVFile(string path)
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
             var writer = File.CreateText(path);
             writer.WriteLine(Header);
             return writer;
