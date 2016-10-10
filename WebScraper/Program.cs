@@ -245,7 +245,19 @@ namespace WebScraper
                     itemCount.Add(name, 1);
                 }
 
-                return BigCommerceUtilities.ProductFormat(name, desc, "ALP", "", "", price, "", images, "", "");
+                var strings = new List<string>();
+                strings.Add(BigCommerceUtilities.ProductFormat(name, desc, "ALP", "", "", price, "", images, "", ""));
+                foreach(var color in colors)
+                {
+                    var colorData = color.Value;
+                    var colorImages = new string[] { colorData.FrontImage, colorData.BackImage, colorData.SideImage };
+                    strings.Add(BigCommerceUtilities.ColorFormat(color.Key, colorImages, colorData.HtmlColor));
+                }
+                foreach (var size in sizes)
+                {
+                    strings.Add(BigCommerceUtilities.SizeFormat(size, "",""));
+                }
+                return string.Join("\n", strings);
             }
             catch (Exception e)
             {
