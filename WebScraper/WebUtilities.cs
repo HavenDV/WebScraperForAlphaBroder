@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Net;
+using System.Net.Http;
 using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 using System.IO;
@@ -43,7 +44,7 @@ namespace WebScraper
             Directory.Delete(CacheDirectory, true);
         }
 
-        public static string DownloadPage(string url, bool usingAjax = true, bool usingCache = true)
+        public static async Task<string> DownloadPage(string url, bool usingAjax = true, bool usingCache = true)
         {
             var filePath = GetCachePath(url);
             if (usingCache && File.Exists(filePath))
@@ -52,15 +53,16 @@ namespace WebScraper
             }
 
             string data = string.Empty;
-            if (usingAjax)
+            //if (usingAjax)
             {
                 //var config = Configuration.Default.WithDefaultLoader();
                 //data = BrowsingContext.New(config).OpenAsync(url).Result.;
-                data = new ScrapingBrowser().AjaxDownloadString(new Uri(url));
+                //data = new ScrapingBrowser().AjaxDownloadString(new Uri(url));
+                data = await new HttpClient().GetStringAsync(url);
             }
-            else
+            //else
             {
-                data = new WebClient().DownloadString(url);
+                //data = new WebClient().DownloadString(url);
             }
             File.CreateText(GetCachePath(url)).Write(data);
             return data;
