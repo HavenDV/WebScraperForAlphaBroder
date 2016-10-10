@@ -45,7 +45,7 @@ namespace WebScraper
         {
             foreach (Match match in Regex.Matches(data, "<ul class=\\\"bullet\\\">((.|\\n)+?)<\\/ul>"))
             {
-                return "<ul>\n"+match.Groups[1].Value+"</ul>";
+                return "<ul>\n" + match.Groups[1].Value + "</ul>";
             }
             return string.Empty;
         }
@@ -59,43 +59,139 @@ namespace WebScraper
             }
             return string.Empty;
         }
-        
+
         static IList<string> GetImages(string data, string id)
         {
             var images = new List<string>();
             foreach (Match m in Regex.Matches(data, "//(\\S+?)\\.(jpg|png|gif|jpeg)"))
             {
                 var value = m.Value;
-                if (value.Contains(id, StringComparison.OrdinalIgnoreCase) && 
-                    !value.Contains("large") && 
-                    !value.Contains("grande") && 
+                if (value.Contains(id, StringComparison.OrdinalIgnoreCase) &&
+                    !value.Contains("large") &&
+                    !value.Contains("grande") &&
                     !value.Contains("1024"))
                 {
-                    images.Add("http:"+ value);
+                    images.Add("http:" + value);
                 }
             }
 
             return images.Distinct().ToList();
         }
 
-        static IList<string> GetColors(string data)
+        static List<string> GetColorData(string data)
         {
-            Uri uri = new Uri("http://google.com/search?q=test");
-            Regex reHref = new Regex(@"(?inx)
-    <a \s [^>]*
-        href \s* = \s*
-            (?<q> ['""] )
-                (?<url> [^""]+ )
-            \k<q>
-    [^>]* >");
-            var colors = new HashSet<string>();
-            foreach (Match m in Regex.Matches(data, "//(\\S+?)\\.(jpg|png|gif|jpeg)"))
+            var colorDatas = new List<string>();
+            foreach (Match m in Regex.Matches(data.Replace('\n', ' '), "<div class=\\\"colorchip\\\".+?>"))
             {
-                var value = m.Value;
-                colors.Add(value);
+                colorDatas.Add(m.Value);
             }
 
-            return colors.ToList();
+            return colorDatas;
+        }
+
+        static string GetSizeData(string data)
+        {
+            foreach (Match m1 in Regex.Matches(data.Replace('\n', ' '), "<table class=\\\"specs-tab\\\".+?table>"))
+            {
+                foreach (Match m2 in Regex.Matches(m1.Value, "<tr class=\\\"tr-row1\\\".+?tr>"))
+                {
+                    return m2.Value;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        static List<string> GetSizes(string data)
+        {
+            var sizes = new List<string>();
+            var sizeData = GetSizeData(data);
+            foreach (Match m in Regex.Matches(sizeData, "<td class=\\\"td-cols\\\">(.+?)<\\/td>"))
+            {
+                var size = m.Groups[1].Value.Replace("-", "");
+                if (!string.IsNullOrWhiteSpace(size))
+                {
+                    sizes.Add(size);
+                }
+            }
+
+            return sizes;
+        }
+
+        static string GetStyleColor(string data)
+        {
+            foreach (Match m in Regex.Matches(data, "style=\\\"background-color:(#.+?);\\\""))
+            {
+                return m.Groups[1].Value;
+            }
+
+            return string.Empty;
+        }
+
+        static string GetFrontImage(string data)
+        {
+            foreach (Match m in Regex.Matches(data, "data-front=\\\"(.+?)\\\""))
+            {
+                return m.Groups[1].Value;
+            }
+
+            return string.Empty;
+        }
+
+        static string GetBackImage(string data)
+        {
+            foreach (Match m in Regex.Matches(data, "data-back=\\\"(.+?)\\\""))
+            {
+                return m.Groups[1].Value;
+            }
+
+            return string.Empty;
+        }
+
+        static string GetSideImage(string data)
+        {
+            foreach (Match m in Regex.Matches(data, "data-side=\\\"(.+?)\\\""))
+            {
+                return m.Groups[1].Value;
+            }
+
+            return string.Empty;
+        }
+
+        static string GetColorName(string data)
+        {
+            foreach (Match m in Regex.Matches(data, "data-color=\\\"(.+?)\\\""))
+            {
+                return m.Groups[1].Value;
+            }
+
+            return string.Empty;
+        }
+
+        class ColorData
+        {
+            public string HtmlColor;
+            public string FrontImage;
+            public string BackImage;
+            public string SideImage;
+        }
+
+        static Dictionary<string, ColorData> GetColors(string data)
+        {
+            var colors = new Dictionary<string, ColorData>();
+            foreach (var colorData in GetColorData(data))
+            {
+                colors.Add(GetColorName(colorData),
+                    new ColorData
+                    {
+                        HtmlColor = GetStyleColor(colorData),
+                        FrontImage = GetFrontImage(colorData),
+                        BackImage = GetBackImage(colorData),
+                        SideImage = GetSideImage(colorData)
+                    });
+            }
+
+            return colors;
         }
 
         public static string ToRoman(int number)
@@ -122,18 +218,21 @@ namespace WebScraper
         {
             try
             {
-                var data = WebUtilities.DownloadPage(url);
+                Console.WriteLine("Current url: {0}", url);
+                var data = WebUtilities.DownloadPage(url).Result;
                 var name = GetName(data);
                 var desc = GetDescription(data);
                 var price = "1.00";//GetPrice(data);
 
-                Console.WriteLine(price);
+                //Console.WriteLine(price);
                 if (string.IsNullOrWhiteSpace(price))
                 {
                     throw new Exception("Price cannot be null.");
                 }
 
                 var images = new List<string>();// GetImages(data, id);
+                var colors = GetColors(data);
+                var sizes = GetSizes(data);
 
                 //Fix duplicates roman number method
                 if (itemCount.ContainsKey(name))
@@ -154,7 +253,7 @@ namespace WebScraper
             }
             return string.Empty;
         }
-        
+
         static IList<string> GetTeams(string prefix)
         {
             var teams = new List<string>();
@@ -178,7 +277,7 @@ namespace WebScraper
         static IList<string> GetItems(string url)
         {
             var items = new List<string>();
-            var data = WebUtilities.DownloadPage(url);
+            var data = WebUtilities.DownloadPage(url).Result;
 
             //Console.WriteLine(data);
             //set UseDefaultCookiesParser as false if a website returns invalid cookies format
@@ -188,7 +287,7 @@ namespace WebScraper
             foreach (Match match in Regex.Matches(data, "<div class=\\\"rsltProdNameText\\\">(.+?)<\\/div>"))
             {
                 var item = string.Format(
-                    "https://www.alphabroder.com/cgi-bin/online/webshr/prod-labeldtl.w?sr={0}&currentColor=", 
+                    "https://www.alphabroder.com/cgi-bin/online/webshr/prod-labeldtl.w?sr={0}&currentColor=",
                     match.Groups[1].Value);
                 items.Add(item);
             }
@@ -211,21 +310,12 @@ namespace WebScraper
 
             return items;
         }
-        
-        static StreamWriter CreateImportCSVFile(string path)
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            var header = "\"Item Type\",\"Product ID\",\"Product Name\",\"Product Type\",\"Product Code/SKU\",\"Bin Picking Number\",\"Brand Name\",\"Option Set\",\"Option Set Align\",\"Product Description\",\"Price\",\"Cost Price\",\"Retail Price\",\"Sale Price\",\"Fixed Shipping Cost\",\"Free Shipping\",\"Product Warranty\",\"Product Weight\",\"Product Width\",\"Product Height\",\"Product Depth\",\"Allow Purchases?\",\"Product Visible?\",\"Product Availability\",\"Track Inventory\",\"Current Stock Level\",\"Low Stock Level\",\"Category\",\"Product Image ID - 1\",\"Product Image File - 1\",\"Product Image Description - 1\",\"Product Image Is Thumbnail - 1\",\"Product Image Sort - 1\",\"Product Image ID - 2\",\"Product Image File - 2\",\"Product Image Description - 2\",\"Product Image Is Thumbnail - 2\",\"Product Image Sort - 2\",\"Product Image ID - 3\",\"Product Image File - 3\",\"Product Image Description - 3\",\"Product Image Is Thumbnail - 3\",\"Product Image Sort - 3\",\"Product Image ID - 4\",\"Product Image File - 4\",\"Product Image Description - 4\",\"Product Image Is Thumbnail - 4\",\"Product Image Sort - 4\",\"Product Image ID - 5\",\"Product Image File - 5\",\"Product Image Description - 5\",\"Product Image Is Thumbnail - 5\",\"Product Image Sort - 5\",\"Search Keywords\",\"Page Title\",\"Meta Keywords\",\"Meta Description\",\"MYOB Asset Acct\",\"MYOB Income Acct\",\"MYOB Expense Acct\",\"Product Condition\",\"Show Product Condition?\",\"Event Date Required?\",\"Event Date Name\",\"Event Date Is Limited?\",\"Event Date Start Date\",\"Event Date End Date\",\"Sort Order\",\"Product Tax Class\",\"Product UPC/EAN\",\"Stop Processing Rules\",\"Product URL\",\"Redirect Old URL?\",\"GPS Global Trade Item Number\",\"GPS Manufacturer Part Number\",\"GPS Gender\",\"GPS Age Group\",\"GPS Color\",\"GPS Size\",\"GPS Material\",\"GPS Pattern\",\"GPS Item Group ID\",\"GPS Category\",\"GPS Enabled\",\"Avalara Product Tax Code\",\"Product Custom Fields\"";
-            var file = File.CreateText(path);
-            file.WriteLine(header);
-            return file;
-        }
 
         static async Task<string> DownloadItemsAsync(IList<string> items, string teamName, string collectionName)
         {
             Console.WriteLine("Start download {0} team: {1}. Size: {2}", collectionName, teamName, items.Count);
             return string.Join("\n", await Task.WhenAll(
-                items.Select(item => 
+                items.Select(item =>
                     Task.Run(() =>
                         DownloadPage(item, teamName, collectionName)
                 ))));
@@ -248,15 +338,15 @@ namespace WebScraper
 
         static void LoadCategory(string name, string to, string fullname)
         {
-            var file = CreateImportCSVFile(Path.Combine(to, name + ".csv"));
+            var file = BigCommerceUtilities.CreateImportCSVFile(Path.Combine(to, name + ".csv"));
             file.Write(DownloadTeamsAsync(GetTeams(fullname), name).Result);
             file.Close();
         }
 
         static void LoadCollection(string name, string to)
         {
-            var url = CreateLink(name);
-            var file = CreateImportCSVFile(Path.Combine(to, name + ".csv"));
+            var url = "https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=1&ff=yes&RequestAction=advisor&RequestAction=advisor&RequestData=CA_Search&CatPath=All+Products////T-Shirts////////AttribSelect=Age = 'Youth'";//CreateLink(name);
+            var file = BigCommerceUtilities.CreateImportCSVFile(Path.Combine(to, name + ".csv"));
             var items = GetItems(url);
             Console.WriteLine("Start download category: {0}. Size: {1}", name, items.Count);
             file.Write(DownloadItemsAsync(items, "", name).Result);
@@ -267,13 +357,13 @@ namespace WebScraper
         static void DisplayHelp()
         {
             Console.WriteLine(@"
-Web Scraper For zhats.com v1.0.0  released: September 29, 2016
+Web Scraper For alphabroder.com v1.0.0  released: October 10, 2016
 Copyright (C) 2016 Konstantin S.
 https://www.upwork.com/fl/havendv
 
 Usage:
     webscraper.exe <pathtooutputdir>
-    - pathtooutputdir - Directory for save output csv files. Example: C:\\zhats.com\\
+    - pathtooutputdir - Directory for save output csv files. Example: C:\WebScrapingData\
 
 ");
         }
@@ -299,7 +389,7 @@ Usage:
                 //WebUtilities.DownloadPages("http://www.sanmar.com/sanmar-servlets/SearchServlet?catId={0}&va=t", Enumerable.Range(0, 255));
                 Console.WriteLine("Download ended.");
             }
-            catch(Exception e)
+            catch (Exception e)
             {
                 Console.WriteLine("Exception: {0}", e.Message);
             }
