@@ -34,16 +34,17 @@ namespace BigCommerce
                 collection, id, prefix, brand, width);
         }
 
-        public static string ColorFormat(string color, IList<string> images)
+        public static string ColorFormat(string color, IList<string> images, string preview)
         {
             return string.Format(
-                "  Rule,,\"[CS]Color={0}:{1}\",,,,,,,,,,,,,,,,,,,Y,Y,,,,,,,{1},,N,,,{2},,,,,{3},,,,,{4},,,,,{5},,,,,,,,,,,,,,,,,,,,,N,,,,,,,,,,,,,,,",
+                "  Rule,,\"[CS]Color={0}:{6}\",,,,,,,,,,,,,,,,,,,Y,Y,,,,,,,{1},,N,,,{2},,,,,{3},,,,,{4},,,,,{5},,,,,,,,,,,,,,,,,,,,,N,,,,,,,,,,,,,,,",
                 color,
                 images.Count > 0 ? images[0] : "",
                 images.Count > 1 ? images[1] : "",
                 images.Count > 2 ? images[2] : "",
                 images.Count > 3 ? images[3] : "",
-                images.Count > 4 ? images[4] : "");
+                images.Count > 4 ? images[4] : "",
+                preview);
         }
 
         public static string GetPrefixForValue(string value)
