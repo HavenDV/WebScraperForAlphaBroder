@@ -8,11 +8,9 @@ using System.Text.RegularExpressions;
 using System.IO;
 using System.Threading;
 using System.Globalization;
-using HtmlAgilityPack;
-using ScrapySharp.Extensions;
-using ScrapySharp.Network;
+using BigCommerce;
 
-namespace WebScrapper
+namespace WebScraper
 {
     public static class StringExtensions
     {
@@ -26,13 +24,12 @@ namespace WebScrapper
     {
         static IDictionary<string, int> itemCount = new Dictionary<string, int>();
 
-        static string CreateLink(string categoryName, int categoryId = 130, int resultsNumber = 1)
+        static string CreateLink(string categoryName, int resultsNumber = 1)
         {
             return string.Format(
-                "https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults={0}&ff=yes&cat={1}&RequestAction=advisor&RequestData=CA_CategoryExpand&bpath=c&CatPath=All%20Products////ALP-Categories////{2}", 
-                resultsNumber,
-                categoryId,
-                categoryName);
+                "https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults={1}&CatPath=All+Products////{0}////",
+                categoryName,
+                resultsNumber);
         }
 
         static string GetName(string data)
@@ -81,6 +78,26 @@ namespace WebScrapper
             return images.Distinct().ToList();
         }
 
+        static IList<string> GetColors(string data)
+        {
+            Uri uri = new Uri("http://google.com/search?q=test");
+            Regex reHref = new Regex(@"(?inx)
+    <a \s [^>]*
+        href \s* = \s*
+            (?<q> ['""] )
+                (?<url> [^""]+ )
+            \k<q>
+    [^>]* >");
+            var colors = new HashSet<string>();
+            foreach (Match m in Regex.Matches(data, "//(\\S+?)\\.(jpg|png|gif|jpeg)"))
+            {
+                var value = m.Value;
+                colors.Add(value);
+            }
+
+            return colors.ToList();
+        }
+
         public static string ToRoman(int number)
         {
             if ((number < 0) || (number > 3999)) throw new ArgumentOutOfRangeException("insert value betwheen 1 and 3999");
@@ -101,42 +118,15 @@ namespace WebScrapper
             throw new ArgumentOutOfRangeException("something bad happened");
         }
 
-        static string GetCacheName(string url)
-        {
-            var cacheName = new Uri(url).Query;
-            foreach (var symvol in Path.GetInvalidPathChars())
-            {
-                cacheName = cacheName.Replace(symvol + "", "");
-            }
-            return cacheName.Replace("/", "").Replace(":", "").Replace("?", "");
-        }
-
-        static string DownloadStringWithCache(string url)
-        {
-            Console.WriteLine(url);
-            var name = Path.GetFileName(url);
-            var filePath = Path.Combine("cache", GetCacheName(url));
-            if (File.Exists(filePath))
-            {
-                return File.OpenText(filePath).ReadToEnd();
-            }
-            var data = new ScrapingBrowser().NavigateToPage(new Uri(url)).Content;
-            Directory.CreateDirectory("cache");
-            Console.WriteLine(filePath);
-            var writer = File.CreateText(filePath);
-            writer.Write(data);
-            writer.Close();
-            return data;
-        }
-
         static string DownloadPage(string url, string team, string collection)
         {
             try
             {
-                var data = DownloadStringWithCache(url);
+                var data = WebUtilities.DownloadPage(url);
                 var name = GetName(data);
                 var desc = GetDescription(data);
-                var price = GetPrice(data);
+                var price = "1.00";//GetPrice(data);
+
                 Console.WriteLine(price);
                 if (string.IsNullOrWhiteSpace(price))
                 {
@@ -156,15 +146,7 @@ namespace WebScrapper
                     itemCount.Add(name, 1);
                 }
 
-                var template = "Product,,\"{0}\",P,,,,,Right,\"<p><span>{1}</span></p>\",{2},0.00,0.00,0.00,0.00,N,,16.0000,0.0000,0.0000,0.0000,Y,Y,,none,0,0,\"Shop/Caps \\/ Hats/{9}/{3}\",,{4},,Y,0,,{5},,,,,{6},,,,,{7},,,,,{8},,,,,,,,,,,New,N,N,\"Delivery Date\",N,,,0,\"Non - Taxable Products\",,N,,,,,,,,,,,,,N,,";
-                return string.Format(template,
-                    name, desc.Trim(' ', '\n', '\r').Replace("\r", "").Replace("\n", ""), price, team.Replace('-', ' '),
-                    images.Count > 0 ? images[0] : "",
-                    images.Count > 1 ? images[1] : "",
-                    images.Count > 2 ? images[2] : "",
-                    images.Count > 3 ? images[3] : "",
-                    images.Count > 4 ? images[4] : "",
-                    collection);
+                return BigCommerceUtilities.ProductFormat(name, desc, "ALP", "", "", price, "", images, "", "");
             }
             catch (Exception e)
             {
@@ -196,10 +178,7 @@ namespace WebScrapper
         static IList<string> GetItems(string url)
         {
             var items = new List<string>();
-            //Console.WriteLine(url);
-            //var browser = new ScrapingBrowser();
-            //var homePage = browser.NavigateToPage(new Uri(url));
-            var data = DownloadStringWithCache(url);// homePage.Content;
+            var data = WebUtilities.DownloadPage(url);
 
             //Console.WriteLine(data);
             //set UseDefaultCookiesParser as false if a website returns invalid cookies format
@@ -313,10 +292,11 @@ Usage:
                     Console.ReadKey();
                     return;
                 }
-
+                //WebUtilities.ClearCache();
                 var outputDir = args[0];
                 Console.WriteLine("Download started.");
                 LoadCollection("T-Shirts", outputDir);
+                //WebUtilities.DownloadPages("http://www.sanmar.com/sanmar-servlets/SearchServlet?catId={0}&va=t", Enumerable.Range(0, 255));
                 Console.WriteLine("Download ended.");
             }
             catch(Exception e)
