@@ -16,13 +16,12 @@ namespace BigCommerce
         //No size
         //"  Rule",,\"[CS]Color=Black:#000000,[RT]Size=XXXL\",,,,,,,,,,,,,,,[ADD]0.02,,,,N,Y,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,N,,,,,,,,,,,,,,,
 
-        public static string ProductFormat(string name, string desc, string prefix, string id, string brand, string price, string width, IList<string> images, string category, string subcategory, string collection = "")
+        public static string ProductFormat(string name, string desc, string prefix, string id, string brand, string price, string weight, IList<string> images, string category, string subcategory, string collection = "")
         {
-
-            var template = "Product,,\"{0}\",P,{12}{11},,{13},\"{13} {0}\",Right,\"<p><span>{1}</span></p>\",{2},0.00,0.00,0.00,0.00,N,,{14},0.0000,0.0000,0.0000,Y,Y,,none,0,0,\"Shop/{8}/{9}/{10}\",,{3},,Y,0,,{4},,,,,{5},,,,,{6},,,,,{7},,,,,,,,,,,New,N,N,\"Delivery Date\",N,,,0,\"Non - Taxable Products\",,N,,,,,,,,,,,,,N,,";
+            var template = "Product,,\"{0}\",P,\"{12}{11}\",,\"{13}\",\"{13} {0}\",Right,\"<p><span>{1}</span></p>\",{2},0.00,0.00,0.00,0.00,N,,{14},0.0000,0.0000,0.0000,{15},Y,,none,0,0,\"Shop/{8}/{9}/{10}\",,{3},,Y,0,,{4},,,,,{5},,,,,{6},,,,,{7},,,,,,,,,,,New,N,N,\"Delivery Date\",N,,,0,\"Non - Taxable Products\",,N,,,,,,,,,,,,,N,,";
             return string.Format(template,
                 name,
-                desc.Trim(' ', '\n', '\r').Replace("\r", "").Replace("\n", ""),
+                desc.Trim(' ', '\n', '\r').Replace("\r", "").Replace("\n", "").Replace("\"", ""),
                 price,
                 images.Count > 0 ? images[0] : "",
                 images.Count > 1 ? images[1] : "",
@@ -31,7 +30,8 @@ namespace BigCommerce
                 images.Count > 4 ? images[4] : "",
                 category,
                 subcategory,
-                collection, id, prefix, brand, width);
+                collection, id, prefix, brand, weight, 
+                string.IsNullOrWhiteSpace(price) ? "N" : "Y");
         }
 
         public static string ColorFormat(string color, IList<string> images, string preview)
