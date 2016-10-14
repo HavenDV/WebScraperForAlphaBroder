@@ -9,6 +9,9 @@ using System.IO;
 using System.Threading;
 using System.Globalization;
 using BigCommerce;
+using System.Data;
+using HtmlAgilityPack;
+using Fizzler;
 
 namespace WebScraper
 {
@@ -22,14 +25,71 @@ namespace WebScraper
 
     class Program
     {
-        static IDictionary<string, int> itemCount = new Dictionary<string, int>();
+        static IDictionary<string, int> _itemCount = new Dictionary<string, int>();
+        static DataTable _table = null;
+        static int _id = 5000;
+        static object _mutex = new object();
 
-        static string CreateLink(string categoryName, int resultsNumber = 1)
+        static string GetPriceForSize(string name, string size)
         {
-            return string.Format(
-                "https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults={1}&CatPath=All+Products////{0}////",
-                categoryName,
-                resultsNumber);
+            var prices = new List<double>();
+            var sizePrices = new List<double>();
+            for (var i = 0; i < _table.Rows.Count; ++i)
+            {
+                var row = _table.Rows[i];
+                var itemName = (string)row.ItemArray[2];
+                var itemSize = (string)row.ItemArray[6];
+                var itemPrice = (double)row.ItemArray[8];
+                if (string.Equals(itemName, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    prices.Add(itemPrice);
+                    if (string.Equals(itemSize, size, StringComparison.OrdinalIgnoreCase) ||
+                        (itemSize == "S-XL" && (size == "S" || size == "M" || size == "L" || size == "XL")) ||
+                        (itemSize == "XS-XL" && (size == "XS" || size == "S" || size == "M" || size == "L" || size == "XL")))
+                    {
+                        sizePrices.Add(itemPrice);
+                    }
+                }
+            }
+            if (sizePrices.Count > 0)
+            {
+                return sizePrices.Max().ToString("0.00", CultureInfo.InvariantCulture);
+            }
+            if (prices.Count > 0)
+            {
+                return prices.Max().ToString("0.00", CultureInfo.InvariantCulture);
+            }
+            return string.Empty;
+        }
+
+        static string GetBrand(string name)
+        {
+            for (var i = 0; i < _table.Rows.Count; ++i)
+            {
+                var row = _table.Rows[i];
+                var itemName = (string)row.ItemArray[2];
+                var itemBrand = (string)row.ItemArray[3];
+                if (string.Equals(itemName, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return itemBrand;
+                }
+            }
+            return "Alphabroder";
+        }
+
+        static Uri CreateLink(string catPath, int resultsNumber = 5000)
+        {
+            return new Uri(string.Format(
+                "https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults={1}&ff=yes&RequestData=CA_Search&CatPath={0}",
+                catPath,
+                resultsNumber));
+        }
+        static Uri CreateLink(string catName, string catAttribute, int resultsNumber = 5000)
+        {
+            return CreateLink(string.Format(
+                "All%2BProducts%2F%2F%2F%2F{0}%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3D{1}%27",
+                catName,
+                catAttribute), resultsNumber);
         }
 
         static string GetName(string data)
@@ -52,8 +112,8 @@ namespace WebScraper
 
         static string GetPrice(string data)
         {
-            var pattern = "<meta property=\\\"og\\:price\\:amount\\\" content=\\\"(\\S+)\\\">";
-            foreach (Match match in Regex.Matches(data, pattern))
+            var pattern = "<div id=\\\"style-price\\\">.+?\\$(.+?) USD<\\/div>";
+            foreach (Match match in Regex.Matches(data.Replace("\n",""), pattern))
             {
                 return match.Groups[1].Value;
             }
@@ -80,10 +140,15 @@ namespace WebScraper
 
         static List<string> GetColorData(string data)
         {
+            var document = new HtmlDocument();
+            document.LoadHtml(data);
+            var findClasses = document.DocumentNode.Descendants("div").Where(d =>
+                d.Attributes.Contains("class") && d.Attributes["class"].Value.Contains("colordisp")
+            );
             var colorDatas = new List<string>();
-            foreach (Match m in Regex.Matches(data.Replace('\n', ' '), "<div class=\\\"colorchip\\\".+?>"))
+            foreach (var findedClass in findClasses)
             {
-                colorDatas.Add(m.Value);
+                colorDatas.Add(findedClass.OuterHtml.Replace('\n', ' '));
             }
 
             return colorDatas;
@@ -120,39 +185,56 @@ namespace WebScraper
 
         static string GetStyleColor(string data)
         {
-            foreach (Match m in Regex.Matches(data, "style=\\\"background-color:(#.+?);\\\""))
+            var colors = new List<string>();
+            foreach (Match m in Regex.Matches(data, "style=\\\"background-color:(#[0-9a-fA-F]+?);"))
             {
-                return m.Groups[1].Value;
+                colors.Add(m.Groups[1].Value);
+                //return m.Groups[1].Value;
             }
 
-            return string.Empty;
+            return string.Join("|", colors);
         }
 
-        static string GetFrontImage(string data)
+        static string GetFrontImage(string style, string color = "00")
+        {
+            return string.Format("http://marketing.peaksystems.com/imglib/mresjpg/176999/{0}_{1}_z.jpg", style, color);
+        }
+
+        static string GetBackImage(string style, string color = "00")
+        {
+            return string.Format("http://marketing.peaksystems.com/imglib/mresjpg/176999/{0}_{1}_z_BK.jpg", style, color);
+        }
+
+        static string GetSideImage(string style, string color = "00")
+        {
+            return string.Format("http://marketing.peaksystems.com/imglib/mresjpg/176999/{0}_{1}_z_SD.jpg", style, color);
+        }
+
+        static string GetColorFrontImage(string data)
         {
             foreach (Match m in Regex.Matches(data, "data-front=\\\"(.+?)\\\""))
             {
-                return m.Groups[1].Value;
+                return "https://www.alphabroder.com" + m.Groups[1].Value;
             }
 
             return string.Empty;
         }
 
-        static string GetBackImage(string data)
+        static string GetColorBackImage(string data)
         {
             foreach (Match m in Regex.Matches(data, "data-back=\\\"(.+?)\\\""))
             {
-                return m.Groups[1].Value;
+                return "https://www.alphabroder.com" + m.Groups[1].Value;
             }
 
             return string.Empty;
         }
 
-        static string GetSideImage(string data)
+        static string GetColorSideImage(string data)
         {
             foreach (Match m in Regex.Matches(data, "data-side=\\\"(.+?)\\\""))
             {
-                return m.Groups[1].Value;
+                return "https://www.alphabroder.com" + m.Groups[1].Value;
             }
 
             return string.Empty;
@@ -168,6 +250,16 @@ namespace WebScraper
             return string.Empty;
         }
 
+        static string GetColorId(string data)
+        {
+            foreach (Match m in Regex.Matches(data, "buyReg.+?,'(.+?)'\\);"))
+            {
+                return m.Groups[1].Value;
+            }
+
+            return string.Empty;
+        }
+
         class ColorData
         {
             public string HtmlColor;
@@ -176,19 +268,20 @@ namespace WebScraper
             public string SideImage;
         }
 
-        static Dictionary<string, ColorData> GetColors(string data)
+        static Dictionary<string, ColorData> GetColors(string name, string data)
         {
             var colors = new Dictionary<string, ColorData>();
             foreach (var colorData in GetColorData(data))
             {
-                colors.Add(GetColorName(colorData),
+                var colorId = GetColorId(colorData);
+                colors[GetColorName(colorData)]=
                     new ColorData
                     {
                         HtmlColor = GetStyleColor(colorData),
-                        FrontImage = GetFrontImage(colorData),
-                        BackImage = GetBackImage(colorData),
-                        SideImage = GetSideImage(colorData)
-                    });
+                        FrontImage = GetFrontImage(name, colorId),
+                        BackImage = GetBackImage(name, colorId),
+                        SideImage = GetSideImage(name, colorId)
+                    };
             }
 
             return colors;
@@ -214,40 +307,53 @@ namespace WebScraper
             throw new ArgumentOutOfRangeException("something bad happened");
         }
 
-        static string DownloadPage(string url, string team, string collection)
+        static async Task<string> DownloadPage(string url, string category, string subcategory)
         {
             try
             {
-                Console.WriteLine("Current url: {0}", url);
-                var data = WebUtilities.DownloadPage(url).Result;
+                //Console.WriteLine("Current url: {0}", url);
+                var data = await WebUtilities.DownloadPage(new Uri(url));
                 var name = GetName(data);
                 var desc = GetDescription(data);
-                var price = "1.00";//GetPrice(data);
-
-                //Console.WriteLine(price);
+                var price = GetPrice(data);
                 if (string.IsNullOrWhiteSpace(price))
                 {
-                    throw new Exception("Price cannot be null.");
+                    price = GetPriceForSize(name, "");
                 }
+                var brand = GetBrand(name);
 
-                var images = new List<string>();// GetImages(data, id);
-                var colors = GetColors(data);
+                var images = new List<string> {
+                    GetFrontImage(name),
+                    GetBackImage(name),
+                    GetSideImage(name)
+                };
+                var colors = GetColors(name, data);
                 var sizes = GetSizes(data);
 
                 //Fix duplicates roman number method
-                if (itemCount.ContainsKey(name))
+                if (_itemCount.ContainsKey(name))
                 {
-                    itemCount[name] = itemCount[name] + 1;
-                    name += " " + ToRoman(itemCount[name]);
+                    _itemCount[name] = _itemCount[name] + 1;
+                    name += " " + ToRoman(_itemCount[name]);
                 }
                 else
                 {
-                    itemCount.Add(name, 1);
+                    _itemCount.Add(name, 1);
                 }
 
                 var strings = new List<string>();
-                strings.Add(BigCommerceUtilities.ProductFormat(name, desc, "ALP", "", "", price, "", images, "", ""));
-                foreach(var color in colors)
+                foreach (var color in colors)
+                {
+                    var colorData = color.Value;
+                    var colorImages = new List<string>{ colorData.FrontImage, colorData.BackImage, colorData.SideImage };
+                    images = colorImages;
+                    break;
+                }
+                lock (_mutex)
+                {
+                    strings.Add(BigCommerceUtilities.ProductFormat(name, desc, "ALP", (++_id).ToString(), brand, price, "", images, "Alphabroder", category, subcategory));
+                }
+                foreach (var color in colors)
                 {
                     var colorData = color.Value;
                     var colorImages = new string[] { colorData.FrontImage, colorData.BackImage, colorData.SideImage };
@@ -255,59 +361,44 @@ namespace WebScraper
                 }
                 foreach (var size in sizes)
                 {
-                    strings.Add(BigCommerceUtilities.SizeFormat(size, "",""));
+                    var sizePrice = GetPriceForSize(name, size);
+                    //Console.WriteLine("Name: {0}, Size: {1}, Price: {2}", name, size, GetPriceForSize(name, size));
+                    strings.Add(BigCommerceUtilities.SizeFormat(size, sizePrice, ""));
                 }
                 return string.Join("\n", strings);
             }
             catch (Exception e)
             {
+                Console.WriteLine("Current url: {0}", url);
                 Console.WriteLine(e.Message);
+                //Console.WriteLine(e.StackTrace);
             }
             return string.Empty;
         }
 
-        static IList<string> GetTeams(string prefix)
-        {
-            var teams = new List<string>();
-            var data = new WebClient().DownloadString("http://www.zhats.com/pages/" + prefix);
-
-            foreach (Match match in Regex.Matches(data, "<li><a href=\\\"(http://zhats(.+))\\\">(.+)<\\/a><\\/li>"))
-            {
-                //Fix broken link
-                var value = match.Groups[1].Value;
-                if (value.Contains("Canacdiens"))
-                {
-                    value = value.Replace("Canacdiens", "Canadiens");
-                }
-
-                teams.Add(value);
-            }
-
-            return teams;
-        }
-
-        static IList<string> GetItems(string url)
+        static async Task<IList<string>> GetItems(Uri url)
         {
             var items = new List<string>();
-            var data = WebUtilities.DownloadPage(url).Result;
-
-            //Console.WriteLine(data);
-            //set UseDefaultCookiesParser as false if a website returns invalid cookies format
-            //browser.UseDefaultCookiesParser = false;
-
-            //var data = new WebClient().DownloadString(url);
-            foreach (Match match in Regex.Matches(data, "<div class=\\\"rsltProdNameText\\\">(.+?)<\\/div>"))
+            try
             {
-                var item = string.Format(
-                    "https://www.alphabroder.com/cgi-bin/online/webshr/prod-labeldtl.w?sr={0}&currentColor=",
-                    match.Groups[1].Value);
-                items.Add(item);
-            }
+                var data = await WebUtilities.DownloadPage(url);
 
+                foreach (Match match in Regex.Matches(data, "<div class=\\\"rsltProdNameText\\\">(.+?)<\\/div>"))
+                {
+                    var item = string.Format(
+                        "https://www.alphabroder.com/cgi-bin/online/webshr/prod-labeldtl.w?sr={0}&currentColor=",
+                        match.Groups[1].Value);
+                    items.Add(item);
+                }
+            }
+            catch(Exception e)
+            {
+                Console.WriteLine(e.Message);
+            }
             return items;
         }
 
-        static IList<string> GetItemsMultipage(string url)
+        static async Task<IList<string>> GetItemsMultipage(string url)
         {
             var items = new List<string>();
             IList<string> nextItems;
@@ -315,7 +406,7 @@ namespace WebScraper
             do
             {
                 ++page;
-                nextItems = GetItems(url + "&currentpage=" + page);
+                nextItems = await GetItems(new Uri( url + "&currentpage=" + page ));
                 items.AddRange(nextItems);
             }
             while (nextItems.Count > 0);
@@ -323,47 +414,34 @@ namespace WebScraper
             return items;
         }
 
-        static async Task<string> DownloadItemsAsync(IList<string> items, string teamName, string collectionName)
+        static async Task<string> DownloadItemsAsync(IList<string> items, string category, string subcategory, string to)
         {
-            Console.WriteLine("Start download {0} team: {1}. Size: {2}", collectionName, teamName, items.Count);
-            return string.Join("\n", await Task.WhenAll(
-                items.Select(item =>
-                    Task.Run(() =>
-                        DownloadPage(item, teamName, collectionName)
-                ))));
-        }
-
-        static async Task<string> DownloadTeamsAsync(IList<string> teams, string collectionName)
-        {
-            Console.WriteLine("Start download collection: {0}.", collectionName);
-            var count = 0;
-            var strings = await Task.WhenAll(teams.Select(team => Task.Run(() =>
+            Console.WriteLine("Start download {0} Subcategory: {1}. Size: {2}", category, subcategory, items.Count);
+            var strings = await Task.WhenAll(items.Select(item =>
+                   Task.Run(() =>
+                       DownloadPage(item, category, subcategory)
+               )));
+            strings = strings.Where(value => !string.IsNullOrWhiteSpace(value)).ToArray();
+            Console.WriteLine("Download ended: {0}. Downloaded {1} items.", subcategory, strings.Length);
+            var file = BigCommerceUtilities.CreateImportCSVFile(Path.Combine(to, category + " " + subcategory + "0.csv"));
+            for (var i=0; i < strings.Length; ++i)
             {
-                var teamName = Path.GetFileName(team);
-                var items = GetItemsMultipage(team);
-                count += items.Count;
-                return DownloadItemsAsync(items, teamName, collectionName);
-            })));
-            Console.WriteLine("Download ended: {0}. Downloaded {1} items.", collectionName, count);
+                if (i%50 == 0)
+                {
+                    file.Close();
+                    file = BigCommerceUtilities.CreateImportCSVFile(Path.Combine(to, category + " " + subcategory + (i/50) + ".csv"));
+                }
+                file.WriteLine(strings[i]);
+            }
+            file.Close();
             return string.Join("\n", strings);
         }
 
-        static void LoadCategory(string name, string to, string fullname)
+        static async Task LoadSubcategory(Uri url, string category, string subcategory, string to)
         {
-            var file = BigCommerceUtilities.CreateImportCSVFile(Path.Combine(to, name + ".csv"));
-            file.Write(DownloadTeamsAsync(GetTeams(fullname), name).Result);
-            file.Close();
-        }
-
-        static void LoadCollection(string name, string to)
-        {
-            var url = "https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=1&ff=yes&RequestAction=advisor&RequestAction=advisor&RequestData=CA_Search&CatPath=All+Products////T-Shirts////////AttribSelect=Age = 'Youth'";//CreateLink(name);
-            var file = BigCommerceUtilities.CreateImportCSVFile(Path.Combine(to, name + ".csv"));
-            var items = GetItems(url);
-            Console.WriteLine("Start download category: {0}. Size: {1}", name, items.Count);
-            file.Write(DownloadItemsAsync(items, "", name).Result);
-            file.Close();
-            Console.WriteLine("Download ended: {0}. Downloaded {1} items.", name, items.Count);
+            var items = await GetItems(url);
+            //WebUtilities.DownloadPages(items);
+            var result = await DownloadItemsAsync(items, category, subcategory, to);
         }
 
         static void DisplayHelp()
@@ -384,6 +462,194 @@ Usage:
             return param == "-h" || param == "--help" || param == "/?";
         }
 
+        static async Task LoadTShirtsCategory(string outputDir)
+        {
+            var categoryName = "T-Shirts";
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DAge%20%3D%20%27Youth%27"), categoryName, "Youth", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DGender%20%3D%20%27Ladies%27%27"), categoryName, "Ladies", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DSleeve%20Length%20%3D%20%27Long%27"), categoryName, "Long Sleeve", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FT-Shirts%2F%2F%2F%2FAttribSelect%3DNeckline%20%3D%27V-Neck%27"), categoryName, "V-Neck", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FT-Shirts%2F%2F%2F%2FAttribSelect%3DSleeve%20Style%20%3D%27Tank%27"), categoryName, "Tanks", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DSleeve%20Style%20%3D%20%27Sleeveless%27"), categoryName, "Sleeveless", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DMoisture%20Wicking%20%3D%20%27Yes%27"), categoryName, "Moisture Wicking", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%273%20oz%2E%27"), categoryName, "3 oz.", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%274%20oz%2E%27"), categoryName, "4 oz.", outputDir);
+            //await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%275%20oz%2E%27"), categoryName, "5 oz.", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2FAttribSelect%3DWeight%3D%275%20oz%2E%27%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DFabric%20%3D%20%27100%25%20Cotton%27"), categoryName, "5 oz. Cotton", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2FAttribSelect%3DWeight%3D%275%20oz%2E%27%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DFabric%20%3D%20%2750%2F50%20Cotton-Poly%27"), categoryName, "5 oz. Blend", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%276%20oz%2E%27"), categoryName, "6 oz.", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FT-Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DSpecial%20Collections%20%3D%20%27New%27"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadSweatshirtsCategory(string outputDir)
+        {
+            var categoryName = "Sweatshirts";
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FSweatshirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Crewneck%27"), categoryName, "Crewneck", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FSweatshirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Pullover%20Hood%27"), categoryName, "Pullover Hood", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FSweatshirts%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27quarter%20and%20half-zips%27%3B%3B%3B%3BType%20%3D%20%27%20Full-Zip%20Hood%27"), categoryName, "Zippered Hood", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FSweatshirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Sweatpants%27"), categoryName, "Sweatpants", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FSweatshirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DAge%20%3D%20%27Youth%27"), categoryName, "Youth", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FSweatshirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DGender%20%3D%20%27Ladies%27%27"), categoryName, "Ladies", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FSweatshirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%27%3C%206%20oz%2E%27"), categoryName, "less 6 oz.", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FSweatshirts%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%27%206%20oz%2E%27"), categoryName, "6 oz.", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FSweatshirts%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%27%207-8%20oz%2E%27"), categoryName, "7-8 oz.", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FSweatshirts%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%27%209%20oz%2E%27"), categoryName, "9 oz.", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FSweatshirts%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%27%20%3E10%20oz%2E%27"), categoryName, "more 10 oz.", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FSweatshirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DSpecial%20Collections%20%3D%20%27New%27"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadPolosCategory(string outputDir)
+        {
+            var categoryName = "Polos";
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DPlacket%20%2F%20Neck%20%3D%20%27Mock%27"), categoryName, "Mock", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DSleeve%20%3D%20%27Long%20Sleeve%27"), categoryName, "Long Sleeve", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DPocket%20%3D%20%27Yes%27"), categoryName, "Pocket Polos", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DMoisture%20Wicking%20%3D%20%27Yes%27"), categoryName, "Moisture Wicking", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DEasy%20Care%20%3D%20%27Yes%27"), categoryName, "Easy Care", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DColor%20Blocked%20%3D%20%27Yes%27"), categoryName, "Color Block", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DStriped%20%3D%20%27Yes%27"), categoryName, "Stripes", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DTextured%20%3D%20%27Yes%27"), categoryName, "Textures", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DAge%20%3D%20%27Youth%27"), categoryName, "Youth", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DGender%20%3D%20%27Ladies%27%27"), categoryName, "Ladies", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FPolos%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DSpecial%20Collections%20%3D%20%27New%27"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadKnitsandLayeringCategory(string outputDir)
+        {
+            var categoryName = "Knits and Layering";
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FKnits%20and%20Layering%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DPerformance%20%3D%20%27Yes%27"), categoryName, "Performance", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FKnits%20and%20Layering%2F%2F%2F%2FAttribSelect%3DSpecial%20Collections%3D%27New%27%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%27lightweight%27"), categoryName, "Lightweight", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FKnits%20and%20Layering%2F%2F%2F%2FAttribSelect%3DSpecial%20Collections%3D%27New%27%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%27midweight%27"), categoryName, "Midweight", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FKnits%20and%20Layering%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DFashion%20%3D%20%27Yes%27"), categoryName, "Dress", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FKnits%20and%20Layering%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27V-Neck%27"), categoryName, "V-Neck", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FKnits%20and%20Layering%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DSpecial%20Collections%20%3D%20%27New%27"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadFleeceCategory(string outputDir)
+        {
+            var categoryName = "Fleece";
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FSweatshirts%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27quarter%20and%20half-zips%27%3B%3B%3B%3BType%20%3D%20%27%20Full-Zip%20Hood%27"), categoryName, "Zippered Hood", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FSweatshirts%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27quarter%20and%20half-zips%27%3B%3B%3B%3BType%20%3D%20%27%20Full-Zip%20Hood%27"), categoryName, "Zippered Hood", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FFleece%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Pullover%20Hood%27"), categoryName, "Pullover Hood", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FFleece%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DAge%20%3D%20%27Youth%27"), categoryName, "Youth", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FFleece%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DPerformance%20%3D%20%27Yes%27"), categoryName, "Performance", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FFleece%2F%2F%2F%2FAttribSelect%3DWeight%20%3D%20%27%20lightweight%27"), categoryName, "Lightweight", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FFleece"), categoryName, "Heavyweight", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FFleece%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Vest%27"), categoryName, "Vest", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FFleece%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DSpecial%20Collections%20%3D%20%27New%27"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadWovenShirtsCategory(string outputDir)
+        {
+            var categoryName = "Woven Shirts";
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Broadcloth%27"), categoryName, "Broadcloth", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Chambray%27"), categoryName, "Chambray", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Camp%27"), categoryName, "Camp", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Denim%27"), categoryName, "Denim", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Dobby%27"), categoryName, "Dobby", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Fishing%27"), categoryName, "Fishing", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Oxford%27"), categoryName, "Oxford", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Poplin%27"), categoryName, "Poplin", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Twill%27"), categoryName, "Twill", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DWrinkle%20Resistant%20%3D%20%27Yes%27"), categoryName, "Wrinkle Resistant", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DStain%20Resistant%20%3D%20%27Yes%27"), categoryName, "Stain Resistant", outputDir);
+            await LoadSubcategory(CreateLink("All%2BProducts%2F%2F%2F%2FWoven%20Shirts%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3DSpecial%20Collections%20%3D%20%27New%27"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadOuterwearCategory(string outputDir)
+        {
+            var categoryName = "Outerwear";
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Hi-Visibility"), categoryName, "Hi-Visibility", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Fashion%20%3D%20%27Workwear"), categoryName, "Workwear", outputDir);
+            await LoadSubcategory(new Uri("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=500&RequestAction=advisor&RequestData=CA_BreadcrumbSelect&currentpage=1&CatPath=All%20Products%2F%2F%2F%2FUserSearch%3Dnot%28mill_code%3D%27UA%27%29%2F%2F%2F%2FUserSearch1%3DSoftshell"), categoryName, "Softshell", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Fashion%20%3D%20%27Rainwear"), categoryName, "Rainwear", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Windshirt"), categoryName, "Windshirt", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Fashion%20%3D%20%27Athletic"), categoryName, "Athletic", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Fashion%20%3D%20%27Golf"), categoryName, "Golf", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Weight%20%3D%20%27Lightweight"), categoryName, "Lightweight", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Weight%20%3D%20%27Midweight"), categoryName, "Midweight", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Weight%20%3D%20%27Heavyweight"), categoryName, "Heavyweight", outputDir);
+            await LoadSubcategory(CreateLink("All%20Products%2F%2F%2F%2FUserSearch%3DOuterwear%2F%2F%2F%2FAttribSelect%3DType%20%3D%20%27Systems%27%2F%2F%2F%2FALP-Categories"), categoryName, "Systems", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Fabric%20%3D%20%27Poly%20Fleece"), categoryName, "Poly Fleece", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Special%20Collections%20%3D%20%27New"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadPantsCategory(string outputDir)
+        {
+            var categoryName = "Pants";
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Workwear"), categoryName, "Workwear", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Yoga-Fitness"), categoryName, "Yoga-Fitness", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Athletic"), categoryName, "Athletic", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Lounge-Sleepwear"), categoryName, "Lounge-Sleepwear", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Leggings"), categoryName, "Leggings", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Capri-Crop"), categoryName, "Capri-Crop", outputDir);
+            //
+            await LoadSubcategory(CreateLink(categoryName, "Special%20Collections%20%3D%20%27New"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadShortsCategory(string outputDir)
+        {
+            var categoryName = "Shorts";
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Athletic"), categoryName, "Athletic", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Workwear"), categoryName, "Workwear", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Lingerie-Sleepwear"), categoryName, "Lingerie-Sleepwear", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Inseam%20%3D%20%275-6%22"), categoryName, "5-6 Inseam", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Inseam%20%3D%20%277-%209%22"), categoryName, "7-9 Inseam", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Inseam%20%3D%20%2710-13%22"), categoryName, "10-13 Inseam", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Special%20Collections%20%3D%20%27New"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadInfantsAndToddlersCategory(string outputDir)
+        {
+            var categoryName = "Infants%20%7C%20Toddlers";
+            var categoryName2 = "Infants and Toddlers";
+            await LoadSubcategory(CreateLink(categoryName, "Sleeve%20%3D%20%27Short"), categoryName2, "Short Sleeve", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Sleeve%20%3D%20%27Long"), categoryName2, "Long Sleeve", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Sweatpants"), categoryName2, "Sweatpants", outputDir);
+            //
+            //
+            //
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Creeper"), categoryName2, "Creeper", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Romper"), categoryName2, "Romper", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Bibs"), categoryName2, "Bibs", outputDir);
+            //
+            //await LoadSubcategory(CreateLink(categoryName, "Special%20Collections%20%3D%20%27New"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadHeadwearCategory(string outputDir)
+        {
+            var categoryName = "Headwear";
+            await LoadSubcategory(CreateLink(categoryName, "Mill%20%3D%20%27Flexfit"), categoryName, "Flexfit", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%275%20Panel"), categoryName, "5 Panel", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%276%20Panel"), categoryName, "6 Panel", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Construction%20%3D%20%27Structured"), categoryName, "Structured", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Construction%20%3D%20%27Unstructured"), categoryName, "Unstructured", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Beanies"), categoryName, "Beanies", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Visors"), categoryName, "Visors", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Special%20Dyes%20or%20Prints%20%3D%20%27Pigment%20Dyed"), categoryName, "Pigment Dyed", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Special%20Dyes%20or%20Prints%20%3D%20%27Camo"), categoryName, "Camo", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Military"), categoryName, "Military", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Bucket"), categoryName, "Bucket", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Use%20%3D%20%27Running"), categoryName, "Runners", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Special%20Collections%20%3D%20%27New"), categoryName, "New", outputDir);
+        }
+
+        static async Task LoadBagsAndAccessoriesCategory(string outputDir)
+        {
+            var categoryName = "Bags%20and%20Accessories";
+            var categoryName2 = "Bags and Accessories";
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27backpacks"), categoryName2, "Backpacks", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27drawstring"), categoryName2, "Drawstring", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27duffel"), categoryName2, "Duffel", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Laptop%20%26%20Tablet%20Cases"), categoryName2, "Laptop and Tablet Cases", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Messenger%20%26%20Briefcases"), categoryName2, "Messenger and Briefcases", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Tote"), categoryName2, "Tote", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Blanket"), categoryName2, "Blanket", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%27Towel%27%3B%3B%3B%3BType%20%3D%20%27Golf%20Towel"), categoryName2, "Towel", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%20%27Aprons"), categoryName2, "Aprons", outputDir);
+            await LoadSubcategory(CreateLink(categoryName, "Type%20%3D%27Scarves%27%3B%3B%3B%3BType%20%3D%20%27Socks"), categoryName2, "Scarves and Socks", outputDir);
+        }
+
         static void Main(string[] args)
         {
             try
@@ -396,8 +662,32 @@ Usage:
                 }
                 //WebUtilities.ClearCache();
                 var outputDir = args[0];
+                _table = Excel.LoadExcelFile("data.xls");
                 Console.WriteLine("Download started.");
-                LoadCollection("T-Shirts", outputDir);
+                LoadTShirtsCategory(outputDir).Wait();
+                LoadSweatshirtsCategory(outputDir).Wait();
+                LoadPolosCategory(outputDir).Wait();
+                LoadKnitsandLayeringCategory(outputDir).Wait();
+                LoadFleeceCategory(outputDir).Wait();
+                LoadWovenShirtsCategory(outputDir).Wait();
+                LoadOuterwearCategory(outputDir).Wait();
+                LoadPantsCategory(outputDir).Wait();
+                LoadShortsCategory(outputDir).Wait();
+                LoadInfantsAndToddlersCategory(outputDir).Wait();
+                LoadHeadwearCategory(outputDir).Wait();
+                LoadBagsAndAccessoriesCategory(outputDir).Wait();
+
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=050&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Sweatshirts", "Sweatshirts", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=100&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Polos", "Polos", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=010&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Knits%20and%20Layering", "Knits%20and%20Layering", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=030&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Fleece", "Fleece", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=120&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Woven%20Shirts", "Woven%20Shirts", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=070&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Outerwear", "Outerwear", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=080&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Pants", "Pants", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=090&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Shorts", "Shorts", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=065&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Infants%20|%20Toddlers", "Infants%20|%20Toddlers", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=040&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Headwear", "Headwear", "Youth", outputDir);
+                //LoadSubcategory("https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults=5000&ff=yes&cat=020&RequestAction=advisor&RequestData=CA_CategoryExpand&currentpage=1&bpath=c&CatPath=All%20Products////ALP-Categories////Bags%20and%20 ", "Bags%20and%20Accessories", "Youth", outputDir);
                 //WebUtilities.DownloadPages("http://www.sanmar.com/sanmar-servlets/SearchServlet?catId={0}&va=t", Enumerable.Range(0, 255));
                 Console.WriteLine("Download ended.");
             }
