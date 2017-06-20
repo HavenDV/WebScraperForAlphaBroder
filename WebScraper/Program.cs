@@ -10,8 +10,9 @@ using System.Threading;
 using System.Globalization;
 using BigCommerce;
 using System.Data;
-using HtmlAgilityPack;
-using Fizzler;
+using System.Net.Http;
+using AngleSharp.Parser.Html;
+using AngleSharp.Dom.Html;
 
 namespace WebScraper
 {
@@ -79,41 +80,32 @@ namespace WebScraper
 
         static Uri CreateLink(string catPath, int resultsNumber = 5000)
         {
-            return new Uri(string.Format(
-                "https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults={1}&ff=yes&RequestData=CA_Search&CatPath={0}",
-                catPath,
-                resultsNumber));
+            return new Uri(
+                $"https://www.alphabroder.com/cgi-bin/online/webshr/search-result.w?nResults={resultsNumber}&ff=yes&RequestData=CA_Search&CatPath={catPath}"
+                );
         }
         static Uri CreateLink(string catName, string catAttribute, int resultsNumber = 5000)
         {
-            return CreateLink(string.Format(
-                "All%2BProducts%2F%2F%2F%2F{0}%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3D{1}%27",
-                catName,
-                catAttribute), resultsNumber);
+            return CreateLink(
+                $"All%2BProducts%2F%2F%2F%2F{catName}%2F%2F%2F%2F%2F%2F%2F%2FAttribSelect%3D{catAttribute}%27",
+                resultsNumber
+                );
         }
 
-        static string GetName(string data)
+        static string GetName(IHtmlDocument document)
         {
-            foreach (Match match in Regex.Matches(data, "<h1>(.+)<\\/h1>"))
-            {
-                return match.Groups[1].Value;
-            }
-            return string.Empty;
+            return document.QuerySelectorAll("#style-header-name h1").FirstOrDefault()?.TextContent ?? string.Empty;
         }
 
-        static string GetDescription(string data)
+        static string GetDescription(IHtmlDocument document)
         {
-            foreach (Match match in Regex.Matches(data, "<ul class=\\\"bullet\\\">((.|\\n)+?)<\\/ul>"))
-            {
-                return "<ul>\n" + match.Groups[1].Value + "</ul>";
-            }
-            return string.Empty;
+            return document.QuerySelectorAll(".bullet").First().OuterHtml;
         }
 
         static string GetPrice(string data)
         {
             var pattern = "<div id=\\\"style-price\\\">.+?\\$(.+?) USD<\\/div>";
-            foreach (Match match in Regex.Matches(data.Replace("\n",""), pattern))
+            foreach (Match match in Regex.Matches(data.Replace("\n", ""), pattern))
             {
                 return match.Groups[1].Value;
             }
@@ -138,13 +130,9 @@ namespace WebScraper
             return images.Distinct().ToList();
         }
 
-        static List<string> GetColorData(string data)
+        static List<string> GetColorData(IHtmlDocument document)
         {
-            var document = new HtmlDocument();
-            document.LoadHtml(data);
-            var findClasses = document.DocumentNode.Descendants("div").Where(d =>
-                d.Attributes.Contains("class") && d.Attributes["class"].Value.Contains("colordisp")
-            );
+            var findClasses = document.QuerySelectorAll("div.colordisp");
             var colorDatas = new List<string>();
             foreach (var findedClass in findClasses)
             {
@@ -197,17 +185,17 @@ namespace WebScraper
 
         static string GetFrontImage(string style, string color = "00")
         {
-            return string.Format("http://marketing.peaksystems.com/imglib/mresjpg/176999/{0}_{1}_z.jpg", style, color);
+            return $"http://marketing.peaksystems.com/imglib/mresjpg/176999/{style}_{color}_z.jpg";
         }
 
         static string GetBackImage(string style, string color = "00")
         {
-            return string.Format("http://marketing.peaksystems.com/imglib/mresjpg/176999/{0}_{1}_z_BK.jpg", style, color);
+            return $"http://marketing.peaksystems.com/imglib/mresjpg/176999/{style}_{color}_z_BK.jpg";
         }
 
         static string GetSideImage(string style, string color = "00")
         {
-            return string.Format("http://marketing.peaksystems.com/imglib/mresjpg/176999/{0}_{1}_z_SD.jpg", style, color);
+            return $"http://marketing.peaksystems.com/imglib/mresjpg/176999/{style}_{color}_z_SD.jpg";
         }
 
         static string GetColorFrontImage(string data)
@@ -268,13 +256,13 @@ namespace WebScraper
             public string SideImage;
         }
 
-        static Dictionary<string, ColorData> GetColors(string name, string data)
+        static Dictionary<string, ColorData> GetColors(string name, IHtmlDocument document)
         {
             var colors = new Dictionary<string, ColorData>();
-            foreach (var colorData in GetColorData(data))
+            foreach (var colorData in GetColorData(document))
             {
                 var colorId = GetColorId(colorData);
-                colors[GetColorName(colorData)]=
+                colors[GetColorName(colorData)] =
                     new ColorData
                     {
                         HtmlColor = GetStyleColor(colorData),
@@ -306,15 +294,75 @@ namespace WebScraper
             if (number >= 1) return "I" + ToRoman(number - 1);
             throw new ArgumentOutOfRangeException("something bad happened");
         }
+        public static Task DownloadAsync(string requestUri)
+        {
+            var filename = "images/" + GetGoodName(requestUri);
+            if (File.Exists(filename))
+            {
+                return Task.Run(()=> { });
+            }
+            if (requestUri == null)
+                throw new ArgumentNullException("requestUri");
+
+            return DownloadAsync(new Uri(requestUri), filename);
+        }
+
+        public static async Task DownloadAsync(Uri requestUri, string filename)
+        {
+            if (filename == null)
+                throw new ArgumentNullException("filename");
+
+            using (var httpClient = new HttpClient())
+            {
+                using (var request = new HttpRequestMessage(HttpMethod.Get, requestUri))
+                {
+                    using (
+                        Stream contentStream = await (await httpClient.SendAsync(request)).Content.ReadAsStreamAsync(),
+                        stream = new FileStream(filename, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        await contentStream.CopyToAsync(stream);
+                    }
+                }
+            }
+        }
+
+        static string GetGoodName(string url)
+        {
+            var name = url;
+            foreach (var symvol in Path.GetInvalidPathChars())
+            {
+                name = name.Replace(symvol.ToString(), "");
+            }
+            name = Path.GetFileName(name);
+            return name.Replace("/", "").Replace(":", "").Replace("?", "");
+        }
 
         static async Task<string> DownloadPage(string url, string category, string subcategory)
         {
             try
             {
                 //Console.WriteLine("Current url: {0}", url);
-                var data = await WebUtilities.DownloadPage(new Uri(url));
-                var name = GetName(data);
-                var desc = GetDescription(data);
+                var data = await WebUtilities.DownloadPage(new Uri(url), usingCache: true);
+                var parser = new HtmlParser();
+                var document = parser.Parse(data);
+                var name = GetName(document);
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    data = await WebUtilities.DownloadPage(new Uri(url), usingCache: false);
+                    document = parser.Parse(data);
+                    name = GetName(document);
+                }
+                Directory.CreateDirectory("images");
+                var colors = GetColors(name, document);
+                foreach (var color in colors)
+                {
+                    var colorData = color.Value;
+                    await DownloadAsync(colorData.FrontImage);
+                    await DownloadAsync(colorData.BackImage);
+                    await DownloadAsync(colorData.SideImage);
+                }
+                return "";
+                var desc = GetDescription(document);
                 var price = GetPrice(data);
                 if (string.IsNullOrWhiteSpace(price))
                 {
@@ -327,7 +375,6 @@ namespace WebScraper
                     GetBackImage(name),
                     GetSideImage(name)
                 };
-                var colors = GetColors(name, data);
                 var sizes = GetSizes(data);
 
                 //Fix duplicates roman number method
@@ -345,7 +392,7 @@ namespace WebScraper
                 foreach (var color in colors)
                 {
                     var colorData = color.Value;
-                    var colorImages = new List<string>{ colorData.FrontImage, colorData.BackImage, colorData.SideImage };
+                    var colorImages = new List<string> { colorData.FrontImage, colorData.BackImage, colorData.SideImage };
                     images = colorImages;
                     break;
                 }
@@ -371,7 +418,7 @@ namespace WebScraper
             {
                 Console.WriteLine("Current url: {0}", url);
                 Console.WriteLine(e.Message);
-                //Console.WriteLine(e.StackTrace);
+                Console.WriteLine(e.StackTrace);
             }
             return string.Empty;
         }
@@ -381,17 +428,14 @@ namespace WebScraper
             var items = new List<string>();
             try
             {
-                var data = await WebUtilities.DownloadPage(url);
+                var data = await WebUtilities.DownloadPage(url, usingCache: true);
 
                 foreach (Match match in Regex.Matches(data, "<div class=\\\"rsltProdNameText\\\">(.+?)<\\/div>"))
                 {
-                    var item = string.Format(
-                        "https://www.alphabroder.com/cgi-bin/online/webshr/prod-labeldtl.w?sr={0}&currentColor=",
-                        match.Groups[1].Value);
-                    items.Add(item);
+                    items.Add($"https://www.alphabroder.com/cgi-bin/online/webshr/prod-labeldtl.w?sr={match.Groups[1].Value}&currentColor=");
                 }
             }
-            catch(Exception e)
+            catch (Exception e)
             {
                 Console.WriteLine(e.Message);
             }
@@ -406,7 +450,7 @@ namespace WebScraper
             do
             {
                 ++page;
-                nextItems = await GetItems(new Uri( url + "&currentpage=" + page ));
+                nextItems = await GetItems(new Uri(url + "&currentpage=" + page));
                 items.AddRange(nextItems);
             }
             while (nextItems.Count > 0);
@@ -416,20 +460,20 @@ namespace WebScraper
 
         static async Task<string> DownloadItemsAsync(IList<string> items, string category, string subcategory, string to)
         {
-            Console.WriteLine("Start download {0} Subcategory: {1}. Size: {2}", category, subcategory, items.Count);
+            Console.WriteLine($"Start download {category} Subcategory: {subcategory}. Size: {items.Count}");
             var strings = await Task.WhenAll(items.Select(item =>
                    Task.Run(() =>
                        DownloadPage(item, category, subcategory)
                )));
             strings = strings.Where(value => !string.IsNullOrWhiteSpace(value)).ToArray();
-            Console.WriteLine("Download ended: {0}. Downloaded {1} items.", subcategory, strings.Length);
+            Console.WriteLine($"Download ended: {subcategory}. Downloaded {strings.Length} items.");
             var file = BigCommerceUtilities.CreateImportCSVFile(Path.Combine(to, category + " " + subcategory + "0.csv"));
-            for (var i=0; i < strings.Length; ++i)
+            for (var i = 0; i < strings.Length; ++i)
             {
-                if (i%50 == 0)
+                if (i % 50 == 0)
                 {
                     file.Close();
-                    file = BigCommerceUtilities.CreateImportCSVFile(Path.Combine(to, category + " " + subcategory + (i/50) + ".csv"));
+                    file = BigCommerceUtilities.CreateImportCSVFile(Path.Combine(to, category + " " + subcategory + (i / 50) + ".csv"));
                 }
                 file.WriteLine(strings[i]);
             }

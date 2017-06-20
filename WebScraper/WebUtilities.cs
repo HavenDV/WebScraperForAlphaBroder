@@ -7,9 +7,6 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 using System.IO;
-using HtmlAgilityPack;
-using ScrapySharp.Extensions;
-using ScrapySharp.Network;
 using AngleSharp;
 
 namespace WebScraper
@@ -28,12 +25,12 @@ namespace WebScraper
     {
         public static string GetCacheName(string url, int maxLenght = 255)
         {
-            var cacheName = new Uri(url).Query;
+            var name = new Uri(url).Query;
             foreach (var symvol in Path.GetInvalidPathChars())
             {
-                cacheName = cacheName.Replace(symvol + "", "");
+                name = name.Replace(symvol.ToString(), "");
             }
-            return cacheName.Replace("/", "").Replace(":", "").Replace("?", "").GetLast(maxLenght);
+            return name.Replace("/", "").Replace(":", "").Replace("?", "").GetLast(maxLenght);
         }
 
         public static string CacheDirectory {
